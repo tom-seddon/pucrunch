@@ -654,10 +654,15 @@ static unsigned char rleValues[32] = {1,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 				0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0};
 static int rleHist[256];
 
+/* 5 = pucrunch 2003, 4 = pucrunch post-2004... */
+static unsigned rleBitCount = 4;
+
 void PutRleByte(int data) {
     int index;
+    unsigned nonRleBitCount;
+    unsigned rleIndexCount = 1<<rleBitCount;
 
-    for (index = 1; index < 16/*32*/; index++) {
+    for (index = 1; index < rleIndexCount; index++) {
 	if (data == rleValues[index]) {
 	    if (index==1)
 		lenStat[0][3]++;
@@ -667,8 +672,10 @@ void PutRleByte(int data) {
 		lenStat[2][3]++;
 	    else if (index<=15)
 		lenStat[3][3]++;
-	    /*else if (index<=31)
-		lenStat[4][3]++;*/
+	    else if (index<=31) {
+                /* only if rleBitCount == 5, of course... */
+		lenStat[4][3]++;
+            }
 
 	    gainedRlecode += 8 - LenValue(index);
 
@@ -676,14 +683,17 @@ void PutRleByte(int data) {
 	    return;
 	}
     }
+
+    nonRleBitCount = 8 - rleBitCount;
+    
 /*fprintf(stderr, "RLECode n: 0x%02x\n", data);*/
-    PutValue(16/*32*/ + (data>>4/*3*/));
+    PutValue((1<<rleBitCount) + (data>>nonRleBitCount));
 
-    gainedRlecode -= LenValue(16/*32*/+(data>>4/*3*/)) + 4/*3*/;
+    gainedRlecode -= LenValue(rleIndexCount + (data>>nonRleBitCount)) + nonRleBitCount;
 
-    PutNBits(data, 4/*3*/);
+    PutNBits(data, nonRleBitCount);
 
-    lenStat[4/*5*/][3]++;
+    lenStat[rleBitCount][3]++;
     /* Note: values 64..127 are not used if maxGamma>5 */
 }
 
@@ -691,23 +701,25 @@ void PutRleByte(int data) {
 #if 0
 int LenRleByte(unsigned char data) {
     int index;
+    unigned rleIndexCount = 1<<rleBitCount;
 
-    for (index = 1; index < 16/*32*/; index++) {
+    for (index = 1; index < rleIndexCount; index++) {
 	if (data == rleValues[index]) {
 	    return LenValue(index);
 	}
     }
-    return LenValue(16/*32*/ + 0) + 4/*3*/;
+    return LenValue(rleIndexCount + 0) + (8 - rleBitCount);
 }
 #else
 static unsigned char rleLen[256];
 void InitRleLen(void);
 void InitRleLen() {
     int i;
+    unsigned rleIndexCount = 1<<rleBitCount;
 
     for (i=0; i<256; i++)
-	rleLen[i] = LenValue(16/*32*/ + 0) + 4/*3*/;
-    for (i=1; i<16 /*32*/; i++)
+	rleLen[i] = LenValue(rleIndexCount + 0) + (8 - rleBitCount);
+    for (i=1; i<rleIndexCount; i++)
 	rleLen[rleValues[i]] = LenValue(i);
 }
 #define LenRleByte(d) (rleLen[d])
@@ -1307,8 +1319,9 @@ int OptimizeEscape(int *startEscape, int *nonNormal) {
 void InitRle(int);
 void InitRle(int flags) {
     int p, mr, mv, i;
+    unsigned rleIndexCount = 1<<rleBitCount;
 
-    for (i=1; i<16/*32*/; i++) {
+    for (i=1; i<rleIndexCount; i++) {
 	mr = -1;
 	mv = 0;
 
@@ -1333,6 +1346,7 @@ void InitRle(int flags) {
 void OptimizeRle(int);
 void OptimizeRle(int flags) {
     int p, mr, mv, i;
+    unsigned rleIndexCount = 1<<rleBitCount;
 
     if ((flags & F_NORLE)) {
 	rleUsed = 0;
@@ -1367,7 +1381,7 @@ void OptimizeRle(int flags) {
 	}
     }
 
-    for (i=1; i<16 /*32*/; i++) {
+    for (i=1; i<rleIndexCount; i++) {
 	mr = -1;
 	mv = 0;
 
@@ -1668,6 +1682,7 @@ int UnPack(int loadAddr, const unsigned char *data, const char *file,
 	    } else {
 		if (up_GetBits(1)) {
 		    int rleLen, byteCode, byte;
+                    unsigned rleIndexCount = 1<<rleBitCount;
 
 		    if (!up_GetBits(1)) {
 			int newEsc = up_GetBits(escBits);
@@ -1692,10 +1707,12 @@ int UnPack(int loadAddr, const unsigned char *data, const char *file,
 			rleLen |= ((up_GetValue()-1)<<8);
 		    }
 		    byteCode = up_GetValue();
-		    if (byteCode < 16/*32*/) {
+		    if (byteCode < rleIndexCount) {
 			byte = byteCodeVec[byteCode];
 		    } else {
-			byte = ((byteCode-16/*32*/)<<4/*3*/) | up_GetBits(4/*3*/);
+                        unsigned nonRleBitCount = 8 - rleBitCount;
+                        
+			byte = ((byteCode-rleIndexCount)<<nonRleBitCount) | up_GetBits(nonRleBitCount);
 		    }
 
 /*fprintf(stdout, "%5ld %5ld RLE %5d 0x%02x\n", outPointer, up_Byte, rleLen+1,
@@ -2569,7 +2586,9 @@ int PackLz77(int lzsz, int flags, int *startEscape,
 			   (mode[p] & MMARK)?"#":" ", newesc[p]);
 		    if ((indata[p] & escMask) == escape) {
 			escape = newesc[p];
-			printf("«");
+			printf("\xc2\xab"); /* U+00AB LEFT-POINTING
+                                             * DOUBLE ANGLE QUOTATION
+                                             * MARK */
 		    }
 		    printf("\n");
 		    j += 1;
@@ -2990,6 +3009,10 @@ maxrlelen = MAXRLELEN;
 		    flags |= F_ERROR;
 		    break;
 
+                case '5':
+                    rleBitCount = 5;
+                    break;
+                    
 		case 'g':
 		case 'i':
 		case 'r':
@@ -3137,7 +3160,10 @@ maxrlelen = MAXRLELEN;
 		"\t m<val>    max len 5..7 (2*2^5..2*2^7)\n"
 		"\t i<val>    interrupt enable after decompress (0=disable)\n"
 		"\t g<val>    memory configuration after decompress\n"
-		"\t u         unpack\n");
+		"\t u         unpack\n"
+                "\t -5        5-bit RLE values (same format as Jul 15 2003 pucrunch.exe)\n"
+                "\t           (compatible with -c0 only)\n"
+            );
 	return EXIT_FAILURE;
     }
 
@@ -3306,6 +3332,13 @@ maxrlelen = MAXRLELEN;
 	memStart = 0x801;	/* Loading address */
 	memEnd = 0x10000;
 	break;
+    }
+
+    if (machineType !=0) {
+        if (rleBitCount != 4) {
+            fprintf(stderr,"-5 is only compatible with -c0.\n");
+            return 1;
+        }
     }
 
     if (startAddr <= memStart) {
